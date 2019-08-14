@@ -52,8 +52,9 @@ func (ms *MasterServer) SendHeartbeat(stream master_pb.Seaweed_SendHeartbeatServ
 			return err
 		}
 
+		t.Sequence.SetMax(heartbeat.MaxFileKey)
+
 		if dn == nil {
-			t.Sequence.SetMax(heartbeat.MaxFileKey)
 			if heartbeat.Ip == "" {
 				if pr, ok := peer.FromContext(stream.Context()); ok {
 					if pr.Addr != net.Addr(nil) {
@@ -175,7 +176,7 @@ func (ms *MasterServer) KeepConnected(stream master_pb.Seaweed_KeepConnectedServ
 	}
 
 	if !ms.Topo.IsLeader() {
-		return raft.NotLeaderError
+		return ms.informNewLeader(stream)
 	}
 
 	// remember client address
@@ -235,12 +236,26 @@ func (ms *MasterServer) KeepConnected(stream master_pb.Seaweed_KeepConnectedServ
 			}
 		case <-ticker.C:
 			if !ms.Topo.IsLeader() {
-				return raft.NotLeaderError
+				return ms.informNewLeader(stream)
 			}
 		case <-stopChan:
 			return nil
 		}
 	}
 
+	return nil
+}
+
+func (ms *MasterServer) informNewLeader(stream master_pb.Seaweed_KeepConnectedServer) error {
+	leader, err := ms.Topo.Leader()
+	if err != nil {
+		glog.Errorf("topo leader: %v", err)
+		return raft.NotLeaderError
+	}
+	if err := stream.Send(&master_pb.VolumeLocation{
+		Leader: leader,
+	}); err != nil {
+		return err
+	}
 	return nil
 }

@@ -22,7 +22,6 @@ type Volume struct {
 	Collection    string
 	dataFile      *os.File
 	nm            NeedleMapper
-	compactingWg  sync.WaitGroup
 	needleMapKind NeedleMapType
 	readOnly      bool
 
@@ -34,6 +33,8 @@ type Volume struct {
 
 	lastCompactIndexOffset uint64
 	lastCompactRevision    uint16
+
+	isCompacting bool
 }
 
 func NewVolume(dirname string, collection string, id needle.VolumeId, needleMapKind NeedleMapType, replicaPlacement *ReplicaPlacement, ttl *needle.TTL, preallocate int64) (v *Volume, e error) {

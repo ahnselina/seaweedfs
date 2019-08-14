@@ -9,6 +9,7 @@ import (
 	"github.com/chrislusf/seaweedfs/weed/stats"
 	idx2 "github.com/chrislusf/seaweedfs/weed/storage/idx"
 	"github.com/chrislusf/seaweedfs/weed/storage/needle"
+	"github.com/chrislusf/seaweedfs/weed/storage/needle_map"
 	. "github.com/chrislusf/seaweedfs/weed/storage/types"
 	"github.com/chrislusf/seaweedfs/weed/util"
 )
@@ -26,6 +27,10 @@ func (v *Volume) Compact(preallocate int64, compactionBytePerSecond int64) error
 	//v.accessLock.Lock()
 	//defer v.accessLock.Unlock()
 	//glog.V(3).Infof("Got Compaction lock...")
+	v.isCompacting = true
+	defer func() {
+		v.isCompacting = false
+	}()
 
 	filePath := v.FileName()
 	v.lastCompactIndexOffset = v.nm.IndexFileSize()
@@ -36,6 +41,12 @@ func (v *Volume) Compact(preallocate int64, compactionBytePerSecond int64) error
 
 func (v *Volume) Compact2() error {
 	glog.V(3).Infof("Compact2 volume %d ...", v.Id)
+
+	v.isCompacting = true
+	defer func() {
+		v.isCompacting = false
+	}()
+
 	filePath := v.FileName()
 	glog.V(3).Infof("creating copies for volume %d ...", v.Id)
 	return v.copyDataBasedOnIndexFile(filePath+".cpd", filePath+".cpx")
@@ -43,17 +54,22 @@ func (v *Volume) Compact2() error {
 
 func (v *Volume) CommitCompact() error {
 	glog.V(0).Infof("Committing volume %d vacuuming...", v.Id)
+
+	v.isCompacting = true
+	defer func() {
+		v.isCompacting = false
+	}()
+
 	v.dataFileAccessLock.Lock()
 	defer v.dataFileAccessLock.Unlock()
+
 	glog.V(3).Infof("Got volume %d committing lock...", v.Id)
-	v.compactingWg.Add(1)
-	defer v.compactingWg.Done()
 	v.nm.Close()
 	if err := v.dataFile.Close(); err != nil {
 		glog.V(0).Infof("fail to close volume %d", v.Id)
 	}
 	v.dataFile = nil
-	stats.VolumeServerVolumeCounter.WithLabelValues(v.Collection, "volume").Inc()
+	stats.VolumeServerVolumeCounter.WithLabelValues(v.Collection, "volume").Dec()
 
 	var e error
 	if e = v.makeupDiff(v.FileName()+".cpd", v.FileName()+".cpx", v.FileName()+".dat", v.FileName()+".idx"); e != nil {
@@ -184,11 +200,9 @@ func (v *Volume) makeupDiff(newDatFileName, newIdxFileName, oldDatFileName, oldI
 		return fmt.Errorf("oldDatFile %s 's compact revision is %d while newDatFile %s 's compact revision is %d", oldDatFileName, oldDatCompactRevision, newDatFileName, newDatCompactRevision)
 	}
 
-	idxEntryBytes := make([]byte, NeedleIdSize+OffsetSize+SizeSize)
 	for key, increIdxEntry := range incrementedHasUpdatedIndexEntry {
-		NeedleIdToBytes(idxEntryBytes[0:NeedleIdSize], key)
-		OffsetToBytes(idxEntryBytes[NeedleIdSize:NeedleIdSize+OffsetSize], increIdxEntry.offset)
-		util.Uint32toBytes(idxEntryBytes[NeedleIdSize+OffsetSize:NeedleIdSize+OffsetSize+SizeSize], increIdxEntry.size)
+
+		idxEntryBytes := needle_map.ToBytes(key, increIdxEntry.offset, increIdxEntry.size)
 
 		var offset int64
 		if offset, err = dst.Seek(0, 2); err != nil {
@@ -198,8 +212,8 @@ func (v *Volume) makeupDiff(newDatFileName, newIdxFileName, oldDatFileName, oldI
 		//ensure file writing starting from aligned positions
 		if offset%NeedlePaddingSize != 0 {
 			offset = offset + (NeedlePaddingSize - offset%NeedlePaddingSize)
-			if offset, err = v.dataFile.Seek(offset, 0); err != nil {
-				glog.V(0).Infof("failed to align in datafile %s: %v", v.dataFile.Name(), err)
+			if offset, err = dst.Seek(offset, 0); err != nil {
+				glog.V(0).Infof("failed to align in datafile %s: %v", dst.Name(), err)
 				return
 			}
 		}

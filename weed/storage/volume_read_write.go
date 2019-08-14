@@ -43,6 +43,10 @@ func (v *Volume) Destroy() (err error) {
 		err = fmt.Errorf("%s is read-only", v.dataFile.Name())
 		return
 	}
+	if v.isCompacting {
+		err = fmt.Errorf("volume %d is compacting", v.Id)
+		return
+	}
 	v.Close()
 	os.Remove(v.FileName() + ".dat")
 	os.Remove(v.FileName() + ".idx")
@@ -50,30 +54,6 @@ func (v *Volume) Destroy() (err error) {
 	os.Remove(v.FileName() + ".cpx")
 	os.Remove(v.FileName() + ".ldb")
 	os.Remove(v.FileName() + ".bdb")
-	return
-}
-
-// AppendBlob append a blob to end of the data file, used in replication
-func (v *Volume) AppendBlob(b []byte) (offset int64, err error) {
-	if v.readOnly {
-		err = fmt.Errorf("%s is read-only", v.dataFile.Name())
-		return
-	}
-	v.dataFileAccessLock.Lock()
-	defer v.dataFileAccessLock.Unlock()
-	if offset, err = v.dataFile.Seek(0, 2); err != nil {
-		glog.V(0).Infof("failed to seek the end of file: %v", err)
-		return
-	}
-	//ensure file writing starting from aligned positions
-	if offset%NeedlePaddingSize != 0 {
-		offset = offset + (NeedlePaddingSize - offset%NeedlePaddingSize)
-		if offset, err = v.dataFile.Seek(offset, 0); err != nil {
-			glog.V(0).Infof("failed to align in datafile %s: %v", v.dataFile.Name(), err)
-			return
-		}
-	}
-	_, err = v.dataFile.Write(b)
 	return
 }
 
@@ -96,13 +76,29 @@ func (v *Volume) writeNeedle(n *needle.Needle) (offset uint64, size uint32, isUn
 		n.Ttl = v.Ttl
 	}
 
+	// check whether existing needle cookie matches
+	nv, ok := v.nm.Get(n.Id)
+	if ok {
+		existingNeedle, _, _, existingNeedleReadErr := needle.ReadNeedleHeader(v.dataFile, v.Version(), nv.Offset.ToAcutalOffset())
+		if existingNeedleReadErr != nil {
+			err = fmt.Errorf("reading existing needle: %v", existingNeedleReadErr)
+			return
+		}
+		if existingNeedle.Cookie != n.Cookie {
+			glog.V(0).Infof("write cookie mismatch: existing %x, new %x", existingNeedle.Cookie, n.Cookie)
+			err = fmt.Errorf("mismatching cookie %x", n.Cookie)
+			return
+		}
+	}
+
+	// append to dat file
 	n.AppendAtNs = uint64(time.Now().UnixNano())
 	if offset, size, _, err = n.Append(v.dataFile, v.Version()); err != nil {
 		return
 	}
 	v.lastAppendAtNs = n.AppendAtNs
 
-	nv, ok := v.nm.Get(n.Id)
+	// add to needle map
 	if !ok || uint64(nv.Offset.ToAcutalOffset()) < offset {
 		if err = v.nm.Put(n.Id, ToOffset(int64(offset)), n.Size); err != nil {
 			glog.V(4).Infof("failed to save in needle map %d: %v", n.Id, err)
@@ -144,11 +140,7 @@ func (v *Volume) deleteNeedle(n *needle.Needle) (uint32, error) {
 func (v *Volume) readNeedle(n *needle.Needle) (int, error) {
 	nv, ok := v.nm.Get(n.Id)
 	if !ok || nv.Offset.IsZero() {
-		v.compactingWg.Wait()
-		nv, ok = v.nm.Get(n.Id)
-		if !ok || nv.Offset.IsZero() {
-			return -1, ErrorNotFound
-		}
+		return -1, ErrorNotFound
 	}
 	if nv.Size == TombstoneFileSize {
 		return -1, errors.New("already deleted")
@@ -224,6 +216,7 @@ func ScanVolumeFileFrom(version needle.Version, dataFile *os.File, offset int64,
 		}
 		if err != nil {
 			glog.V(0).Infof("visit needle error: %v", err)
+			return fmt.Errorf("visit needle error: %v", err)
 		}
 		offset += NeedleHeaderSize + rest
 		glog.V(4).Infof("==> new entry offset %d", offset)

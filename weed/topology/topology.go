@@ -16,6 +16,7 @@ import (
 )
 
 type Topology struct {
+	vacuumLockCounter int64
 	NodeImpl
 
 	collectionMap  *util.ConcurrentReadMap

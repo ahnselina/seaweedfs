@@ -78,7 +78,7 @@ dir = "."					# directory to store level db files
 # multiple filers on shared storage, fairly scalable
 ####################################################
 
-[mysql]
+[mysql]  # or tidb
 # CREATE TABLE IF NOT EXISTS filemeta (
 #   dirhash     BIGINT         COMMENT 'first 64 bits of MD5 hash value of directory field',
 #   name        VARCHAR(1000)  COMMENT 'directory or file name',
@@ -96,7 +96,7 @@ database = ""              # create or use an existing database
 connection_max_idle = 2
 connection_max_open = 100
 
-[postgres]
+[postgres] # or cockroachdb
 # CREATE TABLE IF NOT EXISTS filemeta (
 #   dirhash     BIGINT,
 #   name        VARCHAR(65535),
@@ -131,7 +131,7 @@ hosts=[
 enabled = false
 address  = "localhost:6379"
 password = ""
-db = 0
+database = 0
 
 [redis_cluster]
 enabled = false
@@ -144,6 +144,11 @@ addresses = [
     "localhost:30006",
 ]
 password = ""
+
+[etcd]
+enabled = false
+servers = "localhost:2379"
+timeout = "3s"
 
 `
 
@@ -217,22 +222,22 @@ grpcAddress = "localhost:18888"
 # all files under this directory tree are replicated.
 # this is not a directory on your hard drive, but on your filer.
 # i.e., all files with this "prefix" are sent to notification message queue.
-directory = "/buckets"    
+directory = "/buckets"
 
 [sink.filer]
 enabled = false
 grpcAddress = "localhost:18888"
 # all replicated files are under this directory tree
-# this is not a directory on your hard drive, but on your filer.     
+# this is not a directory on your hard drive, but on your filer.
 # i.e., all received files will be "prefixed" to this directory.
-directory = "/backup"    
+directory = "/backup"
 replication = ""
 collection = ""
 ttlSec = 0
 
 [sink.s3]
 # read credentials doc at https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/sessions.html
-# default loads credentials from the shared credentials file (~/.aws/credentials). 
+# default loads credentials from the shared credentials file (~/.aws/credentials).
 enabled = false
 aws_access_key_id     = ""     # if empty, loads from the shared credentials file (~/.aws/credentials).
 aws_secret_access_key = ""     # if empty, loads from the shared credentials file (~/.aws/credentials).
